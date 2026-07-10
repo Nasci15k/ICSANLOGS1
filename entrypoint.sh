@@ -2,7 +2,6 @@
 # entrypoint.sh — Inicia s3d (Sia S3 gateway) + bot Telegram
 
 export S3D_DATA_DIR="${S3D_DATA_DIR:-/data}"
-export S3D_CONFIG_FILE="${S3D_CONFIG_FILE:-/data/s3d.yml}"
 export S3_ENDPOINT="${S3_ENDPOINT:-http://localhost:8000}"
 export S3_ACCESS_KEY="${S3_ACCESS_KEY:-JI55REOJFJPNKT3YP7BA}"
 export S3_SECRET_KEY="${S3_SECRET_KEY:-Ctj6dXADHDmY50f1PwjZg7fT+2r06DuoNwjKEYab}"

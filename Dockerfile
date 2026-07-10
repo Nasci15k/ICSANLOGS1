@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY bot_main.py entrypoint.sh prepare_s3_server.py ./
 RUN chmod +x entrypoint.sh
 
-COPY s3d.yml /data/s3d.yml
+COPY s3d.yml /app/s3d.yml
 COPY s3d.db /data/s3d.db
 
 EXPOSE 8000
