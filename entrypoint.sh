@@ -9,7 +9,7 @@ export S3_SECRET_KEY="${S3_SECRET_KEY:-Ctj6dXADHDmY50f1PwjZg7fT+2r06DuoNwjKEYab}
 export BUCKET_NAME="${BUCKET_NAME:-cgu-logs}"
 
 echo ">>> Iniciando s3d..."
-s3d -api.s3 :8000 &
+s3d &
 S3D_PID=$!
 
 for i in $(seq 1 15); do
