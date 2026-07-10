@@ -1,0 +1,16 @@
+apiAddress: :8000
+adminAddress: :8001
+adminPassword: admin123
+directory: /data
+log:
+    stdout:
+        level: info
+        enabled: true
+        format: human
+        enableANSI: false
+    file:
+        enabled: false
+sia:
+    diskUsageLimit: 107374182400
+s3:
+    hostBases: []
