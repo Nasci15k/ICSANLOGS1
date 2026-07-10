@@ -32,7 +32,7 @@ def get_conn() -> duckdb.DuckDBPyConnection:
         _conn.execute("SET s3_access_key_id = '" + S3_ACCESS_KEY + "'")
         _conn.execute("SET s3_secret_access_key = '" + S3_SECRET_KEY + "'")
         _conn.execute("SET s3_url_style = 'path'")
-        _conn.execute("SET s3_use_ssl = false")
+        _conn.execute("SET s3_use_ssl = " + ("true" if S3_ENDPOINT.startswith("https") else "false"))
         log.info("DuckDB conectado via httpfs -> %s", S3_ENDPOINT)
     return _conn
 

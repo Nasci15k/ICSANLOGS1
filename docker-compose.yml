@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      BOT_TOKEN: "${BOT_TOKEN}"
+      BOT_TOKEN: "8469946262:AAH1-Uksp-IywacGuJFzHjY9dRCxEdZCR6w"
       S3_ENDPOINT: "http://localhost:8000"
       S3_ACCESS_KEY: "minioadmin"
       S3_SECRET_KEY: "minioadmin"
