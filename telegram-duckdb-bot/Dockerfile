@@ -1,17 +1,15 @@
-FROM python:3.11-alpine
+FROM python:3.11-slim
 LABEL description="Telegram bot — DuckDB + Parquet via S3-compatible server"
 WORKDIR /app
 
-RUN apk add --no-cache curl ca-certificates libstdc++
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Código do bot + servidor
 COPY bot_main.py entrypoint.sh prepare_s3_server.py ./
 RUN chmod +x entrypoint.sh
 
-# Ponto de montagem dos arquivos Parquet
 VOLUME /data/parquet
 
 EXPOSE 8000
