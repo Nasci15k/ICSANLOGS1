@@ -1,7 +1,8 @@
-import os, asyncio, logging, time, re
+import os, asyncio, logging, re, threading, time
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 import duckdb
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
@@ -9,150 +10,196 @@ log = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://localhost:8000")
-S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "minioadmin")
-S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "minioadmin")
-BUCKET_NAME = os.environ.get("BUCKET_NAME", "data")
+S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "JI55REOJFJPNKT3YP7BA")
+S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "Ctj6dXADHDmY50f1PwjZg7fT+2r06DuoNwjKEYab")
+BUCKET_NAME = os.environ.get("BUCKET_NAME", "cgu-logs")
+HEALTH_PORT = int(os.environ.get("PORT", "8080"))
+QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "30"))
+MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "20"))
 
-TABLE_WHITELIST = set(t.strip() for t in os.environ.get("TABLE_WHITELIST", "").split(",") if t.strip())
-MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "50"))
-QUERY_TIMEOUT_SEC = int(os.environ.get("QUERY_TIMEOUT_SEC", "30"))
-KEEP_ALIVE_INTERVAL = int(os.environ.get("KEEP_ALIVE_INTERVAL", "5"))
-
-SAFE_SELECT_RE = re.compile(r"^\s*SELECT\b.*\bFROM\b", re.IGNORECASE | re.DOTALL)
-BLOCKED_KEYWORDS = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|EXECUTE|COPY)\b", re.IGNORECASE)
-
+TABLE = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
 _conn: Optional[duckdb.DuckDBPyConnection] = None
 
-def get_conn() -> duckdb.DuckDBPyConnection:
+def get_conn():
     global _conn
     if _conn is None:
         _conn = duckdb.connect(":memory:")
         _conn.execute("INSTALL httpfs; LOAD httpfs")
-        _conn.execute("SET s3_endpoint = '" + S3_ENDPOINT.replace("http://", "").replace("https://", "").rstrip("/") + "'")
-        _conn.execute("SET s3_access_key_id = '" + S3_ACCESS_KEY + "'")
-        _conn.execute("SET s3_secret_access_key = '" + S3_SECRET_KEY + "'")
-        _conn.execute("SET s3_url_style = 'path'")
-        _conn.execute("SET s3_use_ssl = " + ("true" if S3_ENDPOINT.startswith("https") else "false"))
-        log.info("DuckDB conectado via httpfs -> %s", S3_ENDPOINT)
+        ep = S3_ENDPOINT.replace("http://", "").replace("https://", "").rstrip("/")
+        _conn.execute(f"SET s3_endpoint='{ep}'")
+        _conn.execute(f"SET s3_access_key_id='{S3_ACCESS_KEY}'")
+        _conn.execute(f"SET s3_secret_access_key='{S3_SECRET_KEY}'")
+        _conn.execute("SET s3_url_style='path'")
+        _conn.execute(f"SET s3_use_ssl={'true' if S3_ENDPOINT.startswith('https') else 'false'}")
     return _conn
 
-def sanitize_query(text: str) -> Optional[str]:
-    raw = text.strip()
-    if not raw: return None
-    if not SAFE_SELECT_RE.match(raw): return None
-    if BLOCKED_KEYWORDS.search(raw): return None
-    return raw
+def run_sql(sql):
+    conn = get_conn()
+    rows = conn.execute(sql).fetchall()
+    cols = [d[0] for d in conn.description]
+    return rows, cols
 
-def build_sql(query: str) -> str:
-    # Substitui {table} por read_parquet com glob
-    parquet_url = f"s3://{BUCKET_NAME}/data_*.parquet"
-    return query.replace("{table}", f"read_parquet('{parquet_url}')") + f" LIMIT {MAX_RESULTS}"
+def fmt(v):
+    s = str(v) if v is not None else "-"
+    return s[:60] + ("..." if len(s) > 60 else "")
 
-def format_rows(columns: list, rows: list) -> str:
-    if not rows: return "0 resultados."
-    header = " | ".join(str(c) for c in columns)
-    sep = "-" * min(40, len(header))
-    lines = [header, sep]
-    for row in rows[:MAX_RESULTS]:
-        vals = []
-        for v in row:
-            s = str(v) if v is not None else "NULL"
-            if len(s) > 80: s = s[:77] + "..."
-            vals.append(s)
-        lines.append(" | ".join(vals))
-    if len(rows) > MAX_RESULTS:
-        lines.append(f"... e mais {len(rows) - MAX_RESULTS} linhas")
-    return "\n".join(lines)
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *a): pass
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def health_server():
+    HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler).serve_forever()
+
+def build_results(rows, cols, label, elapsed):
+    if not rows:
+        return f"☑️ {label}\n🧵 LINHAS / ROWS: 0\n⌛️ TIME: {elapsed:.2f}s\n\n— vazio / empty —", None
+    lines = [f"☑️ {label}", f"🧵 LINHAS / ROWS: {len(rows)}", f"⌛️ TIME: {elapsed:.2f}s", ""]
+    for r in rows:
+        vals = [fmt(r[cols.index(c)]) for c in cols if c in cols[:3]]
+        lines.append(":".join(vals))
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
+        [InlineKeyboardButton("📋 Copiar tudo", callback_data="copy")],
+    ])
+    return "\n".join(lines), kb
+
+async def safe_query(update, sql, label):
+    try:
+        t0 = time.time()
+        loop = asyncio.get_event_loop()
+        rows, cols = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: run_sql(sql)),
+            timeout=QUERY_TIMEOUT)
+        elapsed = time.time() - t0
+        msg, kb = build_results(rows, cols, label, elapsed)
+        if len(msg) > 4000: msg = msg[:3997] + "..."
+        await update.message.reply_text(msg, reply_markup=kb)
+    except asyncio.TimeoutError:
+        await update.message.reply_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro: {e}")
+
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Buscar URL", switch_inline_query_current_chat="/url ")],
+        [InlineKeyboardButton("👤 Buscar Login", switch_inline_query_current_chat="/login ")],
+        [InlineKeyboardButton("🔑 Buscar Senha", switch_inline_query_current_chat="/senha ")],
+    ])
     await update.message.reply_text(
-        "Envie uma query SELECT para consultar os dados.\n\n"
-        "Use `{table}` como placeholder.\n"
-        "Ex: SELECT login, url FROM {table} WHERE login LIKE '%gmail%' LIMIT 5\n\n"
-        "Comandos: /tables, /schema"
+        "🇧🇷 *CGU LOGS BOT*\n"
+        "Consulta de credenciais vazadas.\n\n"
+        "🇺🇸 *CGU LOGS BOT*\n"
+        "Leaked credentials query.\n\n"
+        "`/url site.com` — Buscar por URL\n"
+        "`/login user@` — Buscar por login\n"
+        "`/senha 123` — Buscar por senha\n"
+        "`/search termo` — Busca geral\n"
+        "`/query SELECT...` — SQL direto (use `{table}`)\n"
+        "`/help` — Ajuda",
+        parse_mode="Markdown", reply_markup=kb)
+
+async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🇧🇷 *COMANDOS*\n"
+        "`/url exemplo.com` — Busca urls contendo \"exemplo.com\"\n"
+        "`/login gmail` — Busca logins contendo \"gmail\"\n"
+        "`/senha 123456` — Busca senhas com \"123456\"\n"
+        "`/search admin` — Busca em todos os campos\n"
+        "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n\n"
+        "🇺🇸 *COMMANDS*\n"
+        "Same as above.\n\n"
+        "Use `{table}` no lugar da tabela nas queries SQL.\n"
+        "Use `{table}` as the table placeholder in SQL queries."
     )
 
-async def list_tables(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        conn = get_conn()
-        url = f"s3://{BUCKET_NAME}/"
-        rs = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, lambda: conn.execute(f"SELECT DISTINCT filename FROM glob('{url}*.parquet')").fetchall()),
-            timeout=10)
-        tables = sorted(set(r[0].replace(".parquet", "") for r in rs))
-        if not tables:
-            await update.message.reply_text("Nenhuma tabela encontrada.")
-            return
-        msg = "Tabelas disponíveis:\n" + "\n".join(f"  - `{t}`" for t in tables)
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"Erro: {e}")
-
-async def schema_table(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text("Use: /schema <nome>")
+async def cmd_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    term = " ".join(ctx.args)
+    if not term:
+        await update.message.reply_text("Use: /url site.com")
         return
-    name = args[0]
-    try:
-        conn = get_conn()
-        url = f"s3://{BUCKET_NAME}/{name}.parquet"
-        rs = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, lambda: conn.execute(f"DESCRIBE read_parquet('{url}')").fetchall()),
-            timeout=10)
-        if not rs:
-            await update.message.reply_text(f"Tabela '{name}' nao encontrada.")
-            return
-        lines = [f"Colunas de '{name}':"]
-        for col, dtype in rs:
-            lines.append(f"  {col}: {dtype}")
-        await update.message.reply_text("\n".join(lines))
-    except Exception as e:
-        await update.message.reply_text(f"Erro: {e}")
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE url LIKE '%{term.replace(\"'\", \"''\")}%' LIMIT {MAX_RESULTS}"
+    await safe_query(update, sql, f"URL: {term}")
 
-async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    term = " ".join(ctx.args)
+    if not term:
+        await update.message.reply_text("Use: /login email@")
+        return
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{term.replace(\"'\", \"''\")}%' LIMIT {MAX_RESULTS}"
+    await safe_query(update, sql, f"LOGIN: {term}")
+
+async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    term = " ".join(ctx.args)
+    if not term:
+        await update.message.reply_text("Use: /senha 123")
+        return
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE senha LIKE '%{term.replace(\"'\", \"''\")}%' LIMIT {MAX_RESULTS}"
+    await safe_query(update, sql, f"SENHA: {term}")
+
+async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    term = " ".join(ctx.args)
+    if not term:
+        await update.message.reply_text("Use: /search termo")
+        return
+    safe = term.replace("'", "''")
+    sql = f"""SELECT login, senha, url FROM {TABLE}
+        WHERE login LIKE '%{safe}%'
+        OR senha LIKE '%{safe}%'
+        OR url LIKE '%{safe}%'
+        LIMIT {MAX_RESULTS}"""
+    await safe_query(update, sql, f"SEARCH: {term}")
+
+async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(ctx.args)
+    if not text:
+        await update.message.reply_text("Use: /query SELECT * FROM {table} LIMIT 5")
+        return
+    if not re.match(r"^\s*SELECT\b", text, re.IGNORECASE):
+        await update.message.reply_text("❌ Apenas SELECT é permitido.")
+        return
+    if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|EXECUTE|COPY)\b", text, re.IGNORECASE):
+        await update.message.reply_text("❌ Comando bloqueado.")
+        return
+    sql = text.replace("{table}", TABLE) + f" LIMIT {MAX_RESULTS}"
+    await safe_query(update, sql, "QUERY")
+
+async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    query = sanitize_query(text)
-    if query is None:
-        await update.message.reply_text("Envie apenas SELECT. Comandos: /start, /tables, /schema")
-        return
-
-    if "{table}" not in query:
-        await update.message.reply_text("Use `{table}` como placeholder. Ex: SELECT * FROM {table} LIMIT 5")
-        return
-
-    sql = build_sql(query)
-    conn = get_conn()
-    try:
-        loop = asyncio.get_event_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: conn.execute(sql).fetchall()),
-            timeout=QUERY_TIMEOUT_SEC)
-        columns = [desc[0] for desc in conn.description]
-        formatted = format_rows(columns, result)
-        msg = f"`{sql[:200]}{'...' if len(sql)>200 else ''}`\n\n```\n{formatted}\n```"
-        if len(msg) > 4000: msg = msg[:3997] + "..."
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except asyncio.TimeoutError:
-        await update.message.reply_text("Query excedeu o tempo limite.")
-    except Exception as e:
-        await update.message.reply_text(f"Erro: {e}")
+    if text.startswith("/"): return
+    parts = text.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() in ("url", "/url"):
+        await cmd_url(update, ctx)
+    elif len(parts) == 2 and parts[0].lower() in ("login", "/login"):
+        await cmd_login(update, ctx)
+    elif len(parts) == 2 and parts[0].lower() in ("senha", "/senha", "pass"):
+        await cmd_senha(update, ctx)
+    else:
+        ctx.args = (text,)
+        await cmd_search(update, ctx)
 
 async def keep_alive():
     while True:
-        await asyncio.sleep(KEEP_ALIVE_INTERVAL * 60)
+        await asyncio.sleep(300)
         try:
             get_conn().execute("SELECT 1")
-            log.debug("Keep-alive OK")
-        except Exception as e:
-            log.warning("Keep-alive falhou: %s", e)
+        except: pass
 
 def main():
+    threading.Thread(target=health_server, daemon=True).start()
+    log.info("Health server on port %d", HEALTH_PORT)
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tables", list_tables))
-    app.add_handler(CommandHandler("schema", schema_table))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("url", cmd_url))
+    app.add_handler(CommandHandler("login", cmd_login))
+    app.add_handler(CommandHandler("senha", cmd_senha))
+    app.add_handler(CommandHandler("search", cmd_search))
+    app.add_handler(CommandHandler("query", cmd_query))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
