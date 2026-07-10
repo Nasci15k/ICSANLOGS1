@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+.env
+.git
+export
+data
+README.md
+docker-compose.yml
+export_script.py
+parquet/
+*.tar.gz

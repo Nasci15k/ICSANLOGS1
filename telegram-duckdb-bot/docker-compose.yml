@@ -1,0 +1,20 @@
+services:
+  bot:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      BOT_TOKEN: "${BOT_TOKEN}"
+      S3_ENDPOINT: "http://localhost:8000"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      BUCKET_NAME: "data"
+      MAX_RESULTS: "50"
+      QUERY_TIMEOUT_SEC: "30"
+      KEEP_ALIVE_INTERVAL: "5"
+    volumes:
+      - parrot-data:/data/parquet  # monta Parquet como volume
+    restart: unless-stopped
+
+volumes:
+  parrot-data:
