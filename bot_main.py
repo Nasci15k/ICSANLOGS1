@@ -115,12 +115,16 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Use `{table}` as the table placeholder in SQL queries."
     )
 
+def _sql_escape(s):
+    return s.replace("'", "''")
+
 async def cmd_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     term = " ".join(ctx.args)
     if not term:
         await update.message.reply_text("Use: /url site.com")
         return
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE url LIKE '%{term.replace(\"'\", \"''\")}%' LIMIT {MAX_RESULTS}"
+    safe = _sql_escape(term)
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE url LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
     await safe_query(update, sql, f"URL: {term}")
 
 async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -128,7 +132,8 @@ async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not term:
         await update.message.reply_text("Use: /login email@")
         return
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{term.replace(\"'\", \"''\")}%' LIMIT {MAX_RESULTS}"
+    safe = _sql_escape(term)
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
     await safe_query(update, sql, f"LOGIN: {term}")
 
 async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -136,7 +141,8 @@ async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not term:
         await update.message.reply_text("Use: /senha 123")
         return
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE senha LIKE '%{term.replace(\"'\", \"''\")}%' LIMIT {MAX_RESULTS}"
+    safe = _sql_escape(term)
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE senha LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
     await safe_query(update, sql, f"SENHA: {term}")
 
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -144,12 +150,8 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not term:
         await update.message.reply_text("Use: /search termo")
         return
-    safe = term.replace("'", "''")
-    sql = f"""SELECT login, senha, url FROM {TABLE}
-        WHERE login LIKE '%{safe}%'
-        OR senha LIKE '%{safe}%'
-        OR url LIKE '%{safe}%'
-        LIMIT {MAX_RESULTS}"""
+    safe = _sql_escape(term)
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%' OR senha LIKE '%{safe}%' OR url LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
     await safe_query(update, sql, f"SEARCH: {term}")
 
 async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
