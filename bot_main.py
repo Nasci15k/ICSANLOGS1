@@ -170,14 +170,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.startswith("/"): return
     parts = text.split(None, 1)
-    if len(parts) == 2 and parts[0].lower() in ("url", "/url"):
+    ctx.args = [parts[1]] if len(parts) > 1 else []
+    cmd = parts[0].lower()
+    if cmd in ("url", "/url"):
         await cmd_url(update, ctx)
-    elif len(parts) == 2 and parts[0].lower() in ("login", "/login"):
+    elif cmd in ("login", "/login"):
         await cmd_login(update, ctx)
-    elif len(parts) == 2 and parts[0].lower() in ("senha", "/senha", "pass"):
+    elif cmd in ("senha", "/senha", "pass"):
         await cmd_senha(update, ctx)
     else:
-        ctx.args = (text,)
+        ctx.args = [text]
         await cmd_search(update, ctx)
 
 async def keep_alive():
@@ -185,7 +187,8 @@ async def keep_alive():
         await asyncio.sleep(300)
         try:
             get_conn().execute("SELECT 1")
-        except: pass
+        except Exception:
+            pass
 
 def main():
     threading.Thread(target=health_server, daemon=True).start()

@@ -1,6 +1,5 @@
 #!/bin/sh
 # entrypoint.sh — Inicia s3d (Sia S3 gateway) + bot Telegram
-set -e
 
 export S3D_DATA_DIR="${S3D_DATA_DIR:-/data}"
 export S3D_CONFIG_FILE="${S3D_CONFIG_FILE:-/data/s3d.yml}"
@@ -23,7 +22,7 @@ for i in $(seq 1 15); do
 done
 
 cleanup() { kill $S3D_PID 2>/dev/null; exit 0; }
-trap cleanup SIGTERM SIGINT
+trap cleanup TERM INT
 
 echo ">>> Iniciando bot..."
 exec python /app/bot_main.py
