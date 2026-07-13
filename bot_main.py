@@ -2,7 +2,7 @@ import os, asyncio, logging, re, threading, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 import duckdb
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BufferedInputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
@@ -14,8 +14,9 @@ S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "JI55REOJFJPNKT3YP7BA")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "Ctj6dXADHDmY50f1PwjZg7fT+2r06DuoNwjKEYab")
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "cgu-logs")
 HEALTH_PORT = int(os.environ.get("PORT", "8080"))
-QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "30"))
-MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "20"))
+QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "60"))
+MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "50000"))
+SEPARATOR = "─" * 30
 
 TABLE = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
 _conn: Optional[duckdb.DuckDBPyConnection] = None
@@ -49,10 +50,6 @@ def run_sql(sql):
     cols = [d[0] for d in conn.description]
     return rows, cols
 
-def fmt(v):
-    s = str(v) if v is not None else "-"
-    return s[:60] + ("..." if len(s) > 60 else "")
-
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -63,18 +60,18 @@ class HealthHandler(BaseHTTPRequestHandler):
 def health_server():
     HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler).serve_forever()
 
-def build_results(rows, cols, label, elapsed):
-    if not rows:
-        return f"☑️ {label}\n🧵 LINHAS / ROWS: 0\n⌛️ TIME: {elapsed:.2f}s\n\n— vazio / empty —", None
-    lines = [f"☑️ {label}", f"🧵 LINHAS / ROWS: {len(rows)}", f"⌛️ TIME: {elapsed:.2f}s", ""]
+def build_file_content(rows, cols, label, elapsed, truncated):
+    lines = [f"☑️ {label}", f"🧵 LINHAS / ROWS: {len(rows)}", f"⌛️ TIME: {elapsed:.2f}s"]
+    if truncated:
+        lines.append(f"⚠️ Mostrando os primeiros {len(rows)} resultados de muitos.")
+    lines.append("")
     for r in rows:
-        vals = [fmt(r[cols.index(c)]) for c in cols if c in cols[:3]]
-        lines.append(":".join(vals))
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
-        [InlineKeyboardButton("📋 Copiar tudo", callback_data="copy")],
-    ])
-    return "\n".join(lines), kb
+        row = dict(zip(cols, r))
+        lines.append(SEPARATOR)
+        lines.append(f"Login: {row.get('login', '-')}")
+        lines.append(f"Senha: {row.get('senha', '-')}")
+        lines.append(SEPARATOR)
+    return "\n".join(lines)
 
 async def safe_query(update, sql, label):
     try:
@@ -84,9 +81,18 @@ async def safe_query(update, sql, label):
             loop.run_in_executor(None, lambda: run_sql(sql)),
             timeout=QUERY_TIMEOUT)
         elapsed = time.time() - t0
-        msg, kb = build_results(rows, cols, label, elapsed)
-        if len(msg) > 4000: msg = msg[:3997] + "..."
-        await update.message.reply_text(msg, reply_markup=kb)
+        if not rows:
+            await update.message.reply_text(
+                f"☑️ {label}\n🧵 LINHAS / ROWS: 0\n⌛️ TIME: {elapsed:.2f}s\n\n— vazio / empty —")
+            return
+        truncated = len(rows) >= MAX_RESULTS
+        content = build_file_content(rows, cols, label, elapsed, truncated)
+        file = BufferedInputFile(content.encode("utf-8"), filename="resultado.txt")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
+        ])
+        await update.message.reply_text("📁 *Icsan Logs* — arquivo gerado!", parse_mode="Markdown", reply_markup=kb)
+        await update.message.reply_document(document=file, filename="resultado.txt")
     except asyncio.TimeoutError:
         await update.message.reply_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
     except Exception as e:
@@ -99,9 +105,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔑 Buscar Senha", switch_inline_query_current_chat="/senha ")],
     ])
     await update.message.reply_text(
-        "🇧🇷 *CGU LOGS BOT*\n"
+        "🇧🇷 *ICSAN LOGS*\n"
         "Consulta de credenciais vazadas.\n\n"
-        "🇺🇸 *CGU LOGS BOT*\n"
+        "🇺🇸 *ICSAN LOGS*\n"
         "Leaked credentials query.\n\n"
         "`/url site.com` — Buscar por URL\n"
         "`/login user@` — Buscar por login\n"
@@ -113,16 +119,18 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🇧🇷 *COMANDOS*\n"
+        "🇧🇷 *ICSAN LOGS — COMANDOS*\n"
         "`/url exemplo.com` — Busca urls contendo \"exemplo.com\"\n"
         "`/login gmail` — Busca logins contendo \"gmail\"\n"
         "`/senha 123456` — Busca senhas com \"123456\"\n"
         "`/search admin` — Busca em todos os campos\n"
         "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n\n"
-        "🇺🇸 *COMMANDS*\n"
-        "Same as above.\n\n"
-        "Use `{table}` no lugar da tabela nas queries SQL.\n"
-        "Use `{table}` as the table placeholder in SQL queries."
+        "Os resultados são enviados como arquivo `.txt`.\n"
+        "Limite padrão de 50.000 linhas por consulta.\n\n"
+        "🇺🇸 *ICSAN LOGS — COMMANDS*\n"
+        "Same as above.\n"
+        "Results are sent as `.txt` files.\n"
+        "Default limit of 50.000 rows per query."
     )
 
 def _sql_escape(s):
