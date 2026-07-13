@@ -17,6 +17,14 @@ HEALTH_PORT = int(os.environ.get("PORT", "8080"))
 QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "60"))
 SEPARATOR = "─" * 30
 
+PAID_USERS = set()
+_paid_env = os.environ.get("PAID_USERS", "")
+if _paid_env:
+    PAID_USERS = set(int(x.strip()) for x in _paid_env.split(",") if x.strip())
+
+def is_paid(uid):
+    return uid in PAID_USERS
+
 TABLE = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
 _conn: Optional[duckdb.DuckDBPyConnection] = None
 
@@ -59,8 +67,17 @@ class HealthHandler(BaseHTTPRequestHandler):
 def health_server():
     HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler).serve_forever()
 
-def build_file_content(rows, cols, label, elapsed):
-    lines = [f"☑️ {label}", f"🧵 LINHAS / ROWS: {len(rows)}", f"⌛️ TIME: {elapsed:.2f}s", ""]
+def build_file_content(rows, cols, label, elapsed, paid):
+    lines = []
+    if not paid:
+        lines.append("🧿 Icsan Logs • @suportefetchbrasil (MODO GRATUITO)")
+        lines.append("")
+        lines.append("O modo gratuito exibe apenas 20% dos resultados. Para acesso completo, adquira um plano com @suportefetchbrasil. Use /planos.")
+        lines.append("")
+    lines.append(f"☑️ {label}")
+    lines.append(f"🧵 LINHAS / ROWS: {len(rows)}")
+    lines.append(f"⌛️ TIME: {elapsed:.2f}s")
+    lines.append("")
     for r in rows:
         row = dict(zip(cols, r))
         lines.append(SEPARATOR)
@@ -81,12 +98,20 @@ async def safe_query(update, sql, label):
             await update.message.reply_text(
                 f"☑️ {label}\n🧵 LINHAS / ROWS: 0\n⌛️ TIME: {elapsed:.2f}s\n\n— vazio / empty —")
             return
-        content = build_file_content(rows, cols, label, elapsed)
+        paid = is_paid(update.effective_user.id)
+        if not paid:
+            rows = rows[:max(1, len(rows) // 5)]
+        content = build_file_content(rows, cols, label, elapsed, paid)
         file = BufferedInputFile(content.encode("utf-8"), filename="resultado.txt")
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
         ])
-        await update.message.reply_text("📁 *Icsan Logs* — arquivo gerado!", parse_mode="Markdown", reply_markup=kb)
+        if not paid:
+            await update.message.reply_text(
+                "🧿 *MODO GRATUITO* — 20% dos resultados.\n💎 Plano completo com /planos",
+                parse_mode="Markdown", reply_markup=kb)
+        else:
+            await update.message.reply_text("📁 *Icsan Logs* — arquivo gerado!", parse_mode="Markdown", reply_markup=kb)
         await update.message.reply_document(document=file, filename="resultado.txt")
     except asyncio.TimeoutError:
         await update.message.reply_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
@@ -109,6 +134,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/senha 123` — Buscar por senha\n"
         "`/search termo` — Busca geral\n"
         "`/query SELECT...` — SQL direto (use `{table}`)\n"
+        "`/planos` — Planos premium\n"
         "`/help` — Ajuda",
         parse_mode="Markdown", reply_markup=kb)
 
@@ -119,8 +145,10 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/login gmail` — Busca logins contendo \"gmail\"\n"
         "`/senha 123456` — Busca senhas com \"123456\"\n"
         "`/search admin` — Busca em todos os campos\n"
-        "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n\n"
-        "Os resultados são enviados como arquivo `.txt`.\n\n"
+        "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n"
+        "`/planos` — Ver planos premium\n\n"
+        "Os resultados são enviados como arquivo `.txt`.\n"
+        "Modo gratuito: 20% dos resultados.\n\n"
         "🇺🇸 *ICSAN LOGS — COMMANDS*\n"
         "Same as above.\n"
         "Results are sent as `.txt` files."
@@ -179,6 +207,22 @@ async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sql = text.replace("{table}", TABLE)
     await safe_query(update, sql, "QUERY")
 
+async def planos_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📋 *ICSAN LOGS — PLANOS*\n\n"
+        "🎫 *GRÁTIS*\n"
+        "• 20% dos resultados\n"
+        "• Sem limite de consultas\n"
+        "• Grátis\n\n"
+        "💎 *PREMIUM* — R$ 9,90/mês\n"
+        "• 100% dos resultados\n"
+        "• Sem limite de consultas\n"
+        "• Prioridade\n\n"
+        "📲 Pagamento: PIX\n"
+        "👤 Suporte: @suportefetchbrasil",
+        parse_mode="Markdown"
+    )
+
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.startswith("/"): return
@@ -216,6 +260,7 @@ def main():
     app.add_handler(CommandHandler("senha", cmd_senha))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("query", cmd_query))
+    app.add_handler(CommandHandler("planos", planos_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     loop = asyncio.new_event_loop()
