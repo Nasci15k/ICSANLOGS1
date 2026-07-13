@@ -4,7 +4,7 @@ from typing import Optional
 import duckdb
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from admin_panel import get_tier, get_planos, get_message, get_group, get_support, get_blocked, start as admin_start
+from admin_panel import get_tier, get_planos, get_message, get_group, get_support, get_blocked, get_timeout, start as admin_start
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -138,12 +138,22 @@ async def safe_query(update, sql, label, term=None):
             return
 
     wait_msg = await update.message.reply_text("⏳ *Processando consulta...*", parse_mode="Markdown")
+    t0 = time.time()
+    async def progress():
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await wait_msg.edit_text(f"⏳ *Processando... ({int(time.time()-t0)}s)*", parse_mode="Markdown")
+            except:
+                break
+    prog = asyncio.ensure_future(progress())
     try:
-        t0 = time.time()
         loop = asyncio.get_event_loop()
+        timeout = get_timeout()
         rows, cols = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: run_sql(sql)),
-            timeout=QUERY_TIMEOUT)
+            timeout=timeout)
+        prog.cancel()
         elapsed = time.time() - t0
         if not rows:
             await wait_msg.edit_text(
@@ -177,8 +187,10 @@ async def safe_query(update, sql, label, term=None):
             f"{status}\n\n📥 Escolha o formato:",
             parse_mode="Markdown", reply_markup=kb)
     except asyncio.TimeoutError:
+        prog.cancel()
         await wait_msg.edit_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
     except Exception as e:
+        prog.cancel()
         await wait_msg.edit_text(f"❌ Erro: {e}")
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

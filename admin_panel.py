@@ -8,6 +8,7 @@ CONFIG_PATH = "/data/bot_config.json"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 
 DEFAULT_CONFIG = {
+    "query_timeout": 300,
     "planos": {
         "free": {
             "percent": 20,
@@ -77,6 +78,9 @@ def get_support():
 
 def get_blocked():
     return get().get("planos", {}).get("free", {}).get("blocked_domains", ["\\.gov"])
+
+def get_timeout():
+    return get().get("query_timeout", 300)
 
 PAGE_ADMIN = """<!DOCTYPE html>
 <html lang=pt-BR>
@@ -153,6 +157,10 @@ a{{color:#58a6ff}}
 <div class=row>
 <div><label>Grupo Telegram</label><input name=group value="{group}"></div>
 <div><label>Suporte</label><input name=support value="{support}"></div>
+</div>
+<div class=row>
+<div><label>Timeout consulta (segundos)</label><input type=number name=query_timeout value="{query_timeout}" min=10 max=3600></div>
+<div></div>
 </div>
 </div>
 
@@ -266,6 +274,7 @@ def _render_admin():
         paid_list="\n".join(f"{k}:{v}" for k, v in paid.items()),
         group=c.get("group", "@icsanlogs"),
         support=c.get("support_contact", "@suportefetchbrasil"),
+        query_timeout=c.get("query_timeout", 300),
         msg_gov=fmt(msgs.get("blocked_gov", "")),
         msg_daily=fmt(msgs.get("daily_limit", "")),
         msg_free=fmt(msgs.get("free_banner", "")),
@@ -293,6 +302,7 @@ def _apply_form(body):
             uid, tier = line.split(":", 1)
             paid[uid.strip()] = int(tier.strip())
     c["paid_users"] = paid
+    c["query_timeout"] = gi("query_timeout", 300)
     c["group"] = gv("group", "@icsanlogs").strip()
     c["support_contact"] = gv("support", "@suportefetchbrasil").strip()
     esc_nl = lambda s: s.replace("\r\n", "\n").replace("\n", "\\n")
