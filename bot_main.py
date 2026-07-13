@@ -1,9 +1,10 @@
-import io, os, asyncio, logging, re, threading, time
+import io, os, asyncio, logging, re, threading, time, uuid
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 import duckdb
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -16,6 +17,14 @@ BUCKET_NAME = os.environ.get("BUCKET_NAME", "cgu-logs")
 HEALTH_PORT = int(os.environ.get("PORT", "8080"))
 QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "60"))
 SEPARATOR = "─" * 30
+
+_pending = {}
+
+def upload_paste(content):
+    data = content.encode("utf-8")
+    req = urllib.request.Request("https://copyandpaste.at/api/log", data=data)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8").strip()
 
 PAID_USERS = set()
 _paid_env = os.environ.get("PAID_USERS", "")
@@ -120,18 +129,17 @@ async def safe_query(update, sql, label):
         if not paid:
             rows = rows[:max(1, len(rows) // 5)]
         content = build_file_content(rows, cols, label, elapsed, paid)
-        file = io.BytesIO(content.encode("utf-8"))
-        file.name = "resultado.txt"
+        key = uuid.uuid4().hex
+        _pending[key] = content
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📄 Arquivo .txt", callback_data=f"txt_{key}"),
+             InlineKeyboardButton("🔗 Link CopyPaste", callback_data=f"paste_{key}")],
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
         ])
-        if not paid:
-            await update.message.reply_text(
-                "🧿 *MODO GRATUITO* — 20% dos resultados.\n💎 Plano completo com /planos",
-                parse_mode="Markdown", reply_markup=kb)
-        else:
-            await update.message.reply_text("📁 *Icsan Logs* — arquivo gerado!", parse_mode="Markdown", reply_markup=kb)
-        await update.message.reply_document(document=file, filename="resultado.txt")
+        status = "🧿 MODO GRATUITO — 20% dos resultados" if not paid else "📁 Icsan Logs"
+        await update.message.reply_text(
+            f"{status}\n\n📥 Escolha o formato:",
+            parse_mode="Markdown", reply_markup=kb)
     except asyncio.TimeoutError:
         await update.message.reply_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
     except Exception as e:
@@ -170,11 +178,11 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/search admin` — Busca em todos os campos\n"
         "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n"
         "`/planos` — Ver planos premium\n\n"
-        "Os resultados são enviados como arquivo `.txt`.\n"
+        "Os resultados podem ser baixados como `.txt` ou compartilhados via link (CopyPaste).\n"
         "Modo gratuito: 20% dos resultados.\n\n"
         "🇺🇸 *ICSAN LOGS — COMMANDS*\n"
         "Same as above.\n"
-        "Results are sent as `.txt` files."
+        "Results: download `.txt` or share via CopyPaste link."
     )
 
 def _sql_escape(s):
@@ -276,6 +284,31 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.args = [text]
         await cmd_search(update, ctx)
 
+async def format_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action, key = query.data.split("_", 1)
+    content = _pending.pop(key, None)
+    if content is None:
+        await query.edit_message_text("⚠️ Resultado expirado. Faça a busca novamente.")
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
+    ])
+    if action == "txt":
+        f = io.BytesIO(content.encode("utf-8"))
+        f.name = "resultado.txt"
+        await query.message.reply_document(document=f, filename="resultado.txt")
+        await query.edit_message_text("📁 *Icsan Logs* — arquivo enviado!", parse_mode="Markdown", reply_markup=kb)
+    elif action == "paste":
+        loop = asyncio.get_event_loop()
+        try:
+            url = await loop.run_in_executor(None, upload_paste, content)
+            await query.edit_message_text(
+                f"🔗 *Link:* {url}", parse_mode="Markdown", reply_markup=kb, disable_web_page_preview=True)
+        except Exception as e:
+            await query.edit_message_text(f"❌ Erro ao criar paste: {e}")
+
 async def keep_alive():
     while True:
         await asyncio.sleep(300)
@@ -298,6 +331,7 @@ def main():
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("query", cmd_query))
     app.add_handler(CommandHandler("planos", planos_cmd))
+    app.add_handler(CallbackQueryHandler(format_choice, pattern=r"^(txt|paste)_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     loop = asyncio.new_event_loop()
