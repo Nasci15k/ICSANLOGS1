@@ -26,13 +26,30 @@ def upload_paste(content):
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.read().decode("utf-8").strip()
 
-PAID_USERS = set()
+PAID_USERS = {}
 _paid_env = os.environ.get("PAID_USERS", "")
 if _paid_env:
-    PAID_USERS = set(int(x.strip()) for x in _paid_env.split(",") if x.strip())
+    for x in _paid_env.split(","):
+        x = x.strip()
+        if ":" in x:
+            uid, tier = x.split(":", 1)
+            PAID_USERS[int(uid)] = int(tier)
 
-def is_paid(uid):
-    return uid in PAID_USERS
+def get_tier(uid):
+    return PAID_USERS.get(uid, 0)
+
+_queries = {}
+DAILY_LIMIT = 5
+
+def qcount(uid):
+    key = f"{time.strftime('%Y-%m-%d')}:{uid}"
+    return _queries.get(key, 0)
+
+def qinc(uid):
+    key = f"{time.strftime('%Y-%m-%d')}:{uid}"
+    _queries[key] = _queries.get(key, 0) + 1
+
+GOV_RE = re.compile(r'\.gov', re.IGNORECASE)
 
 REQUIRED_GROUP = "@icsanlogs"
 
@@ -94,12 +111,17 @@ class HealthHandler(BaseHTTPRequestHandler):
 def health_server():
     HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler).serve_forever()
 
-def build_file_content(rows, cols, label, elapsed, paid):
+def build_file_content(rows, cols, label, elapsed, tier):
     lines = []
-    if not paid:
+    if tier == 0:
         lines.append("🧿 Icsan Logs • @suportefetchbrasil (MODO GRATUITO)")
         lines.append("")
-        lines.append("O modo gratuito exibe apenas 20% dos resultados. Para acesso completo, adquira um plano com @suportefetchbrasil. Use /planos.")
+        lines.append("20% dos resultados liberados. Assine um plano em /planos.")
+        lines.append("")
+    elif tier == 1:
+        lines.append("💎 Icsan Logs • PLANO BASICO")
+        lines.append("")
+        lines.append("50% dos resultados liberados. Assine o VIP em /planos para 100%.")
         lines.append("")
     lines.append(f"☑️ {label}")
     lines.append(f"🧵 LINHAS / ROWS: {len(rows)}")
@@ -113,7 +135,22 @@ def build_file_content(rows, cols, label, elapsed, paid):
         lines.append(SEPARATOR)
     return "\n".join(lines)
 
-async def safe_query(update, sql, label):
+async def safe_query(update, sql, label, term=None):
+    uid = update.effective_user.id
+    tier = get_tier(uid)
+
+    if tier == 0:
+        if term and GOV_RE.search(term):
+            await update.message.reply_text(
+                "🔒 *Acesso restrito!*\n\nUsuários gratuitos não podem consultar domínios .gov.\n💎 Assine um plano em /planos.",
+                parse_mode="Markdown")
+            return
+        if qcount(uid) >= DAILY_LIMIT:
+            await update.message.reply_text(
+                "📊 *Limite diário atingido!*\n\nVocê usou suas 5 consultas gratuitas de hoje.\n💎 Assine um plano em /planos.",
+                parse_mode="Markdown")
+            return
+
     wait_msg = await update.message.reply_text("⏳ *Processando consulta...*", parse_mode="Markdown")
     try:
         t0 = time.time()
@@ -123,13 +160,15 @@ async def safe_query(update, sql, label):
             timeout=QUERY_TIMEOUT)
         elapsed = time.time() - t0
         if not rows:
-            await update.message.reply_text(
+            await wait_msg.edit_text(
                 f"☑️ {label}\n🧵 LINHAS / ROWS: 0\n⌛️ TIME: {elapsed:.2f}s\n\n— vazio / empty —")
             return
-        paid = is_paid(update.effective_user.id)
-        if not paid:
+        if tier == 0:
+            qinc(uid)
             rows = rows[:max(1, len(rows) // 5)]
-        content = build_file_content(rows, cols, label, elapsed, paid)
+        elif tier == 1:
+            rows = rows[:max(1, len(rows) // 2)]
+        content = build_file_content(rows, cols, label, elapsed, tier)
         key = uuid.uuid4().hex
         _pending[key] = content
         kb = InlineKeyboardMarkup([
@@ -137,7 +176,12 @@ async def safe_query(update, sql, label):
              InlineKeyboardButton("🔗 Link CopyPaste", callback_data=f"paste_{key}")],
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
         ])
-        status = "🧿 MODO GRATUITO — 20% dos resultados" if not paid else "📁 Icsan Logs"
+        if tier == 0:
+            status = f"🧿 GRÁTIS ({DAILY_LIMIT - qcount(uid)}/{DAILY_LIMIT} consultas restantes)"
+        elif tier == 1:
+            status = "💎 PLANO BASICO — 50% dos resultados"
+        else:
+            status = "💎 PLANO VIP — 100% dos resultados"
         await wait_msg.edit_text(
             f"{status}\n\n📥 Escolha o formato:",
             parse_mode="Markdown", reply_markup=kb)
@@ -180,10 +224,10 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n"
         "`/planos` — Ver planos premium\n\n"
         "Os resultados podem ser baixados como `.txt` ou compartilhados via link (CopyPaste).\n"
-        "Modo gratuito: 20% dos resultados.\n\n"
+        "Grátis: 20% / 5 consultas/dia / .gov bloqueado. /planos\n\n"
         "🇺🇸 *ICSAN LOGS — COMMANDS*\n"
         "Same as above.\n"
-        "Results: download `.txt` or share via CopyPaste link."
+        "Results: download `.txt` or CopyPaste link. /planos for tiers."
     )
 
 def _sql_escape(s):
@@ -198,7 +242,7 @@ async def cmd_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     safe = _sql_escape(term)
     sql = f"SELECT login, senha, url FROM {TABLE} WHERE url LIKE '%{safe}%'"
-    await safe_query(update, sql, f"URL: {term}")
+    await safe_query(update, sql, f"URL: {term}", term)
 
 async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
@@ -209,7 +253,7 @@ async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     safe = _sql_escape(term)
     sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%'"
-    await safe_query(update, sql, f"LOGIN: {term}")
+    await safe_query(update, sql, f"LOGIN: {term}", term)
 
 async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
@@ -220,7 +264,7 @@ async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     safe = _sql_escape(term)
     sql = f"SELECT login, senha, url FROM {TABLE} WHERE senha LIKE '%{safe}%'"
-    await safe_query(update, sql, f"SENHA: {term}")
+    await safe_query(update, sql, f"SENHA: {term}", term)
 
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
@@ -231,7 +275,7 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     safe = _sql_escape(term)
     sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%' OR senha LIKE '%{safe}%' OR url LIKE '%{safe}%'"
-    await safe_query(update, sql, f"SEARCH: {term}")
+    await safe_query(update, sql, f"SEARCH: {term}", term)
 
 async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
@@ -254,14 +298,18 @@ async def planos_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "📋 *ICSAN LOGS — PLANOS*\n\n"
-        "🎫 *GRÁTIS*\n"
+        "🎫 *GRÁTIS* — R$ 0\n"
         "• 20% dos resultados\n"
-        "• Sem limite de consultas\n"
-        "• Grátis\n\n"
-        "💎 *PREMIUM* — R$ 9,90/mês\n"
+        "• 5 consultas por dia\n"
+        "• Domínios .gov bloqueados\n\n"
+        "💎 *BASICO* — R$ 9,90/mês\n"
+        "• 50% dos resultados\n"
+        "• Consultas ilimitadas\n"
+        "• Todos os domínios\n\n"
+        "👑 *VIP* — R$ 29,90/mês\n"
         "• 100% dos resultados\n"
-        "• Sem limite de consultas\n"
-        "• Prioridade\n\n"
+        "• Consultas ilimitadas\n"
+        "• Todos os domínios liberados\n\n"
         "📲 Pagamento: PIX\n"
         "👤 Suporte: @suportefetchbrasil",
         parse_mode="Markdown"
