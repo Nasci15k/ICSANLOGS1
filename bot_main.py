@@ -1,8 +1,8 @@
-import os, asyncio, logging, re, threading, time
+import io, os, asyncio, logging, re, threading, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 import duckdb
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BufferedInputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
@@ -120,7 +120,8 @@ async def safe_query(update, sql, label):
         if not paid:
             rows = rows[:max(1, len(rows) // 5)]
         content = build_file_content(rows, cols, label, elapsed, paid)
-        file = BufferedInputFile(content.encode("utf-8"), filename="resultado.txt")
+        file = io.BytesIO(content.encode("utf-8"))
+        file.name = "resultado.txt"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
         ])
