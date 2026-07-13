@@ -59,14 +59,14 @@ def get_conn():
         _conn.execute(f"SET s3_use_ssl={'true' if S3_ENDPOINT.startswith('https') else 'false'}")
     return _conn
 
-def check_s3_health():
+def check_health():
     try:
         conn = get_conn()
-        conn.execute(f"SELECT count(*) FROM s3_list('s3://{BUCKET_NAME}/')")
-        log.info("S3 health OK — bucket %s acessível", BUCKET_NAME)
+        conn.execute("SELECT 1")
+        log.info("DuckDB OK")
         return True
     except Exception as e:
-        log.error("S3 health FAIL — bucket %s: %s", BUCKET_NAME, e)
+        log.error("DuckDB FAIL: %s", e)
         return False
 
 def run_sql(sql):
@@ -287,7 +287,7 @@ async def keep_alive():
 def main():
     threading.Thread(target=health_server, daemon=True).start()
     log.info("Health server on port %d", HEALTH_PORT)
-    check_s3_health()
+    check_health()
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
