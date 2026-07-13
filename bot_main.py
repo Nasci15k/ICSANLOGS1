@@ -25,6 +25,24 @@ if _paid_env:
 def is_paid(uid):
     return uid in PAID_USERS
 
+REQUIRED_GROUP = "@icsanlogs"
+
+async def check_group(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not update.effective_user:
+        return True
+    try:
+        member = await ctx.bot.get_chat_member(chat_id=REQUIRED_GROUP, user_id=update.effective_user.id)
+        ok = member.status in ("member", "administrator", "creator", "restricted")
+        if not ok:
+            await update.message.reply_text(
+                "🔒 *Acesso restrito!*\n\n"
+                "Você precisa entrar no grupo @icsanlogs para usar o bot.\n"
+                "https://t.me/icsanlogs",
+                parse_mode="Markdown")
+        return ok
+    except Exception:
+        return True
+
 TABLE = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
 _conn: Optional[duckdb.DuckDBPyConnection] = None
 
@@ -119,6 +137,8 @@ async def safe_query(update, sql, label):
         await update.message.reply_text(f"❌ Erro: {e}")
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔍 Buscar URL", switch_inline_query_current_chat="/url ")],
         [InlineKeyboardButton("👤 Buscar Login", switch_inline_query_current_chat="/login ")],
@@ -139,6 +159,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=kb)
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     await update.message.reply_text(
         "🇧🇷 *ICSAN LOGS — COMANDOS*\n"
         "`/url exemplo.com` — Busca urls contendo \"exemplo.com\"\n"
@@ -158,6 +180,8 @@ def _sql_escape(s):
     return s.replace("'", "''")
 
 async def cmd_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     term = " ".join(ctx.args)
     if not term:
         await update.message.reply_text("Use: /url site.com")
@@ -167,6 +191,8 @@ async def cmd_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await safe_query(update, sql, f"URL: {term}")
 
 async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     term = " ".join(ctx.args)
     if not term:
         await update.message.reply_text("Use: /login email@")
@@ -176,6 +202,8 @@ async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await safe_query(update, sql, f"LOGIN: {term}")
 
 async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     term = " ".join(ctx.args)
     if not term:
         await update.message.reply_text("Use: /senha 123")
@@ -185,6 +213,8 @@ async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await safe_query(update, sql, f"SENHA: {term}")
 
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     term = " ".join(ctx.args)
     if not term:
         await update.message.reply_text("Use: /search termo")
@@ -194,6 +224,8 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await safe_query(update, sql, f"SEARCH: {term}")
 
 async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     text = " ".join(ctx.args)
     if not text:
         await update.message.reply_text("Use: /query SELECT * FROM {table} LIMIT 5")
@@ -208,6 +240,8 @@ async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await safe_query(update, sql, "QUERY")
 
 async def planos_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     await update.message.reply_text(
         "📋 *ICSAN LOGS — PLANOS*\n\n"
         "🎫 *GRÁTIS*\n"
@@ -224,6 +258,8 @@ async def planos_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update, ctx):
+        return
     text = update.message.text.strip()
     if text.startswith("/"): return
     parts = text.split(None, 1)
