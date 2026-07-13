@@ -15,7 +15,7 @@ S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "JI55REOJFJPNKT3YP7BA")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "Ctj6dXADHDmY50f1PwjZg7fT+2r06DuoNwjKEYab")
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "cgu-logs")
 HEALTH_PORT = int(os.environ.get("PORT", "8080"))
-QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "60"))
+QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "300"))
 SEPARATOR = "─" * 30
 
 _pending = {}
@@ -114,6 +114,7 @@ def build_file_content(rows, cols, label, elapsed, paid):
     return "\n".join(lines)
 
 async def safe_query(update, sql, label):
+    wait_msg = await update.message.reply_text("⏳ *Processando consulta...*", parse_mode="Markdown")
     try:
         t0 = time.time()
         loop = asyncio.get_event_loop()
@@ -137,13 +138,13 @@ async def safe_query(update, sql, label):
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
         ])
         status = "🧿 MODO GRATUITO — 20% dos resultados" if not paid else "📁 Icsan Logs"
-        await update.message.reply_text(
+        await wait_msg.edit_text(
             f"{status}\n\n📥 Escolha o formato:",
             parse_mode="Markdown", reply_markup=kb)
     except asyncio.TimeoutError:
-        await update.message.reply_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
+        await wait_msg.edit_text("⌛️ Query excedeu o tempo limite.\n⏱ Timeout.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Erro: {e}")
+        await wait_msg.edit_text(f"❌ Erro: {e}")
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
