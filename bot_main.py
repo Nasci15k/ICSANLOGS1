@@ -33,6 +33,16 @@ def get_conn():
         _conn.execute(f"SET s3_use_ssl={'true' if S3_ENDPOINT.startswith('https') else 'false'}")
     return _conn
 
+def check_s3_health():
+    try:
+        conn = get_conn()
+        conn.execute(f"SELECT count(*) FROM s3_list('s3://{BUCKET_NAME}/')")
+        log.info("S3 health OK — bucket %s acessível", BUCKET_NAME)
+        return True
+    except Exception as e:
+        log.error("S3 health FAIL — bucket %s: %s", BUCKET_NAME, e)
+        return False
+
 def run_sql(sql):
     conn = get_conn()
     rows = conn.execute(sql).fetchall()
@@ -195,6 +205,7 @@ async def keep_alive():
 def main():
     threading.Thread(target=health_server, daemon=True).start()
     log.info("Health server on port %d", HEALTH_PORT)
+    check_s3_health()
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
