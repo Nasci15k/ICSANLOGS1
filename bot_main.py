@@ -1,10 +1,10 @@
 import io, os, asyncio, logging, re, threading, time, uuid
 import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 import duckdb
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from admin_panel import get_tier, get_planos, get_message, get_group, get_support, get_blocked, start as admin_start
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -26,20 +26,7 @@ def upload_paste(content):
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.read().decode("utf-8").strip()
 
-PAID_USERS = {}
-_paid_env = os.environ.get("PAID_USERS", "")
-if _paid_env:
-    for x in _paid_env.split(","):
-        x = x.strip()
-        if ":" in x:
-            uid, tier = x.split(":", 1)
-            PAID_USERS[int(uid)] = int(tier)
-
-def get_tier(uid):
-    return PAID_USERS.get(uid, 0)
-
 _queries = {}
-DAILY_LIMIT = 5
 
 def qcount(uid):
     key = f"{time.strftime('%Y-%m-%d')}:{uid}"
@@ -49,21 +36,25 @@ def qinc(uid):
     key = f"{time.strftime('%Y-%m-%d')}:{uid}"
     _queries[key] = _queries.get(key, 0) + 1
 
-GOV_RE = re.compile(r'\.gov', re.IGNORECASE)
-
-REQUIRED_GROUP = "@icsanlogs"
+def _blocked_re():
+    doms = get_blocked()
+    if not doms:
+        return re.compile(r'(?!x)x')
+    return re.compile("|".join(doms), re.IGNORECASE)
 
 async def check_group(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_user:
         return True
+    group = get_group()
+    if not group:
+        return True
     try:
-        member = await ctx.bot.get_chat_member(chat_id=REQUIRED_GROUP, user_id=update.effective_user.id)
+        member = await ctx.bot.get_chat_member(chat_id=group, user_id=update.effective_user.id)
         ok = member.status in ("member", "administrator", "creator", "restricted")
         if not ok:
             await update.message.reply_text(
-                "🔒 *Acesso restrito!*\n\n"
-                "Você precisa entrar no grupo @icsanlogs para usar o bot.\n"
-                "https://t.me/icsanlogs",
+                f"🔒 *Acesso restrito!*\n\nVocê precisa entrar no grupo {group} para usar o bot.\n"
+                f"https://t.me/{group.lstrip('@')}",
                 parse_mode="Markdown")
         return ok
     except Exception:
@@ -101,27 +92,20 @@ def run_sql(sql):
     cols = [d[0] for d in conn.description]
     return rows, cols
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ok")
-    def log_message(self, *a): pass
-
-def health_server():
-    HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler).serve_forever()
-
 def build_file_content(rows, cols, label, elapsed, tier):
+    support = get_support()
     lines = []
     if tier == 0:
-        lines.append("🧿 Icsan Logs • @suportefetchbrasil (MODO GRATUITO)")
+        banner = get_message("free_banner").replace("\\n", "\n")
+        lines.append(f"🧿 Icsan Logs • {support} (MODO GRATUITO)")
         lines.append("")
-        lines.append("20% dos resultados liberados. Assine um plano em /planos.")
+        lines.append(banner)
         lines.append("")
     elif tier == 1:
-        lines.append("💎 Icsan Logs • PLANO BASICO")
+        banner = get_message("basic_banner").replace("\\n", "\n")
+        lines.append(f"💎 Icsan Logs • {support} (PLANO BASICO)")
         lines.append("")
-        lines.append("50% dos resultados liberados. Assine o VIP em /planos para 100%.")
+        lines.append(banner)
         lines.append("")
     lines.append(f"☑️ {label}")
     lines.append(f"🧵 LINHAS / ROWS: {len(rows)}")
@@ -138,17 +122,19 @@ def build_file_content(rows, cols, label, elapsed, tier):
 async def safe_query(update, sql, label, term=None):
     uid = update.effective_user.id
     tier = get_tier(uid)
+    planos = get_planos()
+    plano_free = planos.get("free", {})
+    daily = plano_free.get("daily_limit", 5)
+    blocked_re = _blocked_re()
 
     if tier == 0:
-        if term and GOV_RE.search(term):
-            await update.message.reply_text(
-                "🔒 *Acesso restrito!*\n\nUsuários gratuitos não podem consultar domínios .gov.\n💎 Assine um plano em /planos.",
-                parse_mode="Markdown")
+        if term and blocked_re.search(term):
+            msg = get_message("blocked_gov").replace("\\n", "\n")
+            await update.message.reply_text(msg, parse_mode="Markdown")
             return
-        if qcount(uid) >= DAILY_LIMIT:
-            await update.message.reply_text(
-                "📊 *Limite diário atingido!*\n\nVocê usou suas 5 consultas gratuitas de hoje.\n💎 Assine um plano em /planos.",
-                parse_mode="Markdown")
+        if daily > 0 and qcount(uid) >= daily:
+            msg = get_message("daily_limit").replace("\\n", "\n").replace("{limit}", str(daily))
+            await update.message.reply_text(msg, parse_mode="Markdown")
             return
 
     wait_msg = await update.message.reply_text("⏳ *Processando consulta...*", parse_mode="Markdown")
@@ -165,9 +151,13 @@ async def safe_query(update, sql, label, term=None):
             return
         if tier == 0:
             qinc(uid)
-            rows = rows[:max(1, len(rows) // 5)]
+            pct = plano_free.get("percent", 20)
         elif tier == 1:
-            rows = rows[:max(1, len(rows) // 2)]
+            pct = planos.get("basic", {}).get("percent", 50)
+        else:
+            pct = 100
+        if pct < 100:
+            rows = rows[:max(1, len(rows) * pct // 100)]
         content = build_file_content(rows, cols, label, elapsed, tier)
         key = uuid.uuid4().hex
         _pending[key] = content
@@ -177,11 +167,12 @@ async def safe_query(update, sql, label, term=None):
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
         ])
         if tier == 0:
-            status = f"🧿 GRÁTIS ({DAILY_LIMIT - qcount(uid)}/{DAILY_LIMIT} consultas restantes)"
+            remaining = max(0, daily - qcount(uid))
+            status = f"🧿 GRÁTIS ({remaining}/{daily} consultas restantes)"
         elif tier == 1:
-            status = "💎 PLANO BASICO — 50% dos resultados"
+            status = "💎 PLANO BASICO"
         else:
-            status = "💎 PLANO VIP — 100% dos resultados"
+            status = "💎 PLANO VIP — 100%"
         await wait_msg.edit_text(
             f"{status}\n\n📥 Escolha o formato:",
             parse_mode="Markdown", reply_markup=kb)
@@ -215,6 +206,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
         return
+    p = get_planos()
+    f = p.get("free", {})
     await update.message.reply_text(
         "🇧🇷 *ICSAN LOGS — COMANDOS*\n"
         "`/url exemplo.com` — Busca urls contendo \"exemplo.com\"\n"
@@ -222,12 +215,12 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/senha 123456` — Busca senhas com \"123456\"\n"
         "`/search admin` — Busca em todos os campos\n"
         "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n"
-        "`/planos` — Ver planos premium\n\n"
-        "Os resultados podem ser baixados como `.txt` ou compartilhados via link (CopyPaste).\n"
-        "Grátis: 20% / 5 consultas/dia / .gov bloqueado. /planos\n\n"
+        "`/planos` — Ver planos\n\n"
+        "Resultados: `.txt` ou link CopyPaste.\n"
+        f"Grátis: {f.get('percent', 20)}% | {f.get('daily_limit', 5)}/dia | /planos\n\n"
         "🇺🇸 *ICSAN LOGS — COMMANDS*\n"
         "Same as above.\n"
-        "Results: download `.txt` or CopyPaste link. /planos for tiers."
+        "Results: `.txt` or CopyPaste link. /planos for tiers."
     )
 
 def _sql_escape(s):
@@ -296,24 +289,28 @@ async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def planos_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
         return
-    await update.message.reply_text(
+    p = get_planos()
+    f, b, v = p.get("free", {}), p.get("basic", {}), p.get("vip", {})
+    support = get_support()
+    blocked = ", ".join(f.get("blocked_domains", [])) if f.get("blocked_domains") else "Nenhum"
+    msg = (
         "📋 *ICSAN LOGS — PLANOS*\n\n"
-        "🎫 *GRÁTIS* — R$ 0\n"
-        "• 20% dos resultados\n"
-        "• 5 consultas por dia\n"
-        "• Domínios .gov bloqueados\n\n"
-        "💎 *BASICO* — R$ 9,90/mês\n"
-        "• 50% dos resultados\n"
-        "• Consultas ilimitadas\n"
-        "• Todos os domínios\n\n"
-        "👑 *VIP* — R$ 29,90/mês\n"
-        "• 100% dos resultados\n"
-        "• Consultas ilimitadas\n"
-        "• Todos os domínios liberados\n\n"
-        "📲 Pagamento: PIX\n"
-        "👤 Suporte: @suportefetchbrasil",
-        parse_mode="Markdown"
+        f"🎫 *GRÁTIS* — R$ 0\n"
+        f"• {f.get('percent', 20)}% dos resultados\n"
+        f"• {f.get('daily_limit', 5)} consultas/dia\n"
+        f"• Bloqueados: {blocked}\n\n"
+        f"💎 *BASICO* — R$ {b.get('price', '9,90')}/mês\n"
+        f"• {b.get('percent', 50)}% dos resultados\n"
+        f"• Consultas ilimitadas\n"
+        f"• Todos os domínios\n\n"
+        f"👑 *VIP* — R$ {v.get('price', '29,90')}/mês\n"
+        f"• {v.get('percent', 100)}% dos resultados\n"
+        f"• Consultas ilimitadas\n"
+        f"• Todos os domínios liberados\n\n"
+        f"📲 Pagamento: PIX\n"
+        f"👤 Suporte: {support}"
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update, ctx):
@@ -367,8 +364,7 @@ async def keep_alive():
             pass
 
 def main():
-    threading.Thread(target=health_server, daemon=True).start()
-    log.info("Health server on port %d", HEALTH_PORT)
+    admin_start(HEALTH_PORT)
     check_health()
 
     app = Application.builder().token(BOT_TOKEN).build()

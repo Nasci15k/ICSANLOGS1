@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot_main.py entrypoint.sh prepare_s3_server.py ./
+COPY bot_main.py admin_panel.py entrypoint.sh prepare_s3_server.py ./
 RUN chmod +x entrypoint.sh
 
 COPY s3d.yml /data/s3d.yml
