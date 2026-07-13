@@ -15,7 +15,6 @@ S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "Ctj6dXADHDmY50f1PwjZg7fT+2r06Du
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "cgu-logs")
 HEALTH_PORT = int(os.environ.get("PORT", "8080"))
 QUERY_TIMEOUT = int(os.environ.get("QUERY_TIMEOUT", "60"))
-MAX_RESULTS = int(os.environ.get("MAX_RESULTS", "50000"))
 SEPARATOR = "─" * 30
 
 TABLE = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
@@ -60,11 +59,8 @@ class HealthHandler(BaseHTTPRequestHandler):
 def health_server():
     HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler).serve_forever()
 
-def build_file_content(rows, cols, label, elapsed, truncated):
-    lines = [f"☑️ {label}", f"🧵 LINHAS / ROWS: {len(rows)}", f"⌛️ TIME: {elapsed:.2f}s"]
-    if truncated:
-        lines.append(f"⚠️ Mostrando os primeiros {len(rows)} resultados de muitos.")
-    lines.append("")
+def build_file_content(rows, cols, label, elapsed):
+    lines = [f"☑️ {label}", f"🧵 LINHAS / ROWS: {len(rows)}", f"⌛️ TIME: {elapsed:.2f}s", ""]
     for r in rows:
         row = dict(zip(cols, r))
         lines.append(SEPARATOR)
@@ -85,8 +81,7 @@ async def safe_query(update, sql, label):
             await update.message.reply_text(
                 f"☑️ {label}\n🧵 LINHAS / ROWS: 0\n⌛️ TIME: {elapsed:.2f}s\n\n— vazio / empty —")
             return
-        truncated = len(rows) >= MAX_RESULTS
-        content = build_file_content(rows, cols, label, elapsed, truncated)
+        content = build_file_content(rows, cols, label, elapsed)
         file = BufferedInputFile(content.encode("utf-8"), filename="resultado.txt")
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔍 Nova busca", switch_inline_query_current_chat="/search ")],
@@ -125,12 +120,10 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/senha 123456` — Busca senhas com \"123456\"\n"
         "`/search admin` — Busca em todos os campos\n"
         "`/query SELECT * FROM {table} LIMIT 5` — SQL livre\n\n"
-        "Os resultados são enviados como arquivo `.txt`.\n"
-        "Limite padrão de 50.000 linhas por consulta.\n\n"
+        "Os resultados são enviados como arquivo `.txt`.\n\n"
         "🇺🇸 *ICSAN LOGS — COMMANDS*\n"
         "Same as above.\n"
-        "Results are sent as `.txt` files.\n"
-        "Default limit of 50.000 rows per query."
+        "Results are sent as `.txt` files."
     )
 
 def _sql_escape(s):
@@ -142,7 +135,7 @@ async def cmd_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use: /url site.com")
         return
     safe = _sql_escape(term)
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE url LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE url LIKE '%{safe}%'"
     await safe_query(update, sql, f"URL: {term}")
 
 async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -151,7 +144,7 @@ async def cmd_login(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use: /login email@")
         return
     safe = _sql_escape(term)
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%'"
     await safe_query(update, sql, f"LOGIN: {term}")
 
 async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -160,7 +153,7 @@ async def cmd_senha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use: /senha 123")
         return
     safe = _sql_escape(term)
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE senha LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE senha LIKE '%{safe}%'"
     await safe_query(update, sql, f"SENHA: {term}")
 
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -169,7 +162,7 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use: /search termo")
         return
     safe = _sql_escape(term)
-    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%' OR senha LIKE '%{safe}%' OR url LIKE '%{safe}%' LIMIT {MAX_RESULTS}"
+    sql = f"SELECT login, senha, url FROM {TABLE} WHERE login LIKE '%{safe}%' OR senha LIKE '%{safe}%' OR url LIKE '%{safe}%'"
     await safe_query(update, sql, f"SEARCH: {term}")
 
 async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -183,7 +176,7 @@ async def cmd_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|EXECUTE|COPY)\b", text, re.IGNORECASE):
         await update.message.reply_text("❌ Comando bloqueado.")
         return
-    sql = text.replace("{table}", TABLE) + f" LIMIT {MAX_RESULTS}"
+    sql = text.replace("{table}", TABLE)
     await safe_query(update, sql, "QUERY")
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
