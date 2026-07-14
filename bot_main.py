@@ -1,4 +1,4 @@
-import io, os, asyncio, logging, re, threading, time, uuid
+import io, os, asyncio, logging, re, time, uuid
 import urllib.request
 from typing import Optional
 import duckdb
@@ -60,9 +60,9 @@ async def check_group(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     except Exception:
         return True
 
-TABLE_S3 = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
+S3_FILES = "', '".join(f"s3://{BUCKET_NAME}/data_{i}.parquet" for i in range(16))
+TABLE_S3 = f"read_parquet(['{S3_FILES}'])"
 TABLE = TABLE_S3
-LOCAL_DB = "/data/logs.duckdb"
 _conn: Optional[duckdb.DuckDBPyConnection] = None
 
 def get_conn():
@@ -76,19 +76,9 @@ def get_conn():
         _conn.execute(f"SET s3_secret_access_key='{S3_SECRET_KEY}'")
         _conn.execute("SET s3_url_style='path'")
         _conn.execute(f"SET s3_use_ssl={'true' if S3_ENDPOINT.startswith('https') else 'false'}")
+        _conn.execute("SET memory_limit='512MB'")
+        _conn.execute("SET threads=2")
     return _conn
-
-def warmup():
-    global TABLE
-    try:
-        if os.path.exists(LOCAL_DB):
-            get_conn().execute(f"ATTACH '{LOCAL_DB}' AS logs (READ_ONLY)")
-            TABLE = "logs.data"
-            log.info("WARMUP PRONTO")
-        else:
-            log.info("Sem cache local. Usando S3 httpfs.")
-    except Exception as e:
-        log.warning("Cache local indisponível: %s. Usando S3 httpfs.", e)
 
 def check_health():
     try:
@@ -392,7 +382,6 @@ async def keep_alive():
 def main():
     admin_start(HEALTH_PORT)
     check_health()
-    threading.Thread(target=warmup, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
