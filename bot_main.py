@@ -81,28 +81,12 @@ def get_conn():
 def warmup():
     global TABLE
     try:
-        wc = duckdb.connect(":memory:")
-        wc.execute("INSTALL httpfs; LOAD httpfs")
-        ep = S3_ENDPOINT.replace("http://", "").replace("https://", "").rstrip("/")
-        wc.execute(f"SET s3_endpoint='{ep}'")
-        wc.execute(f"SET s3_access_key_id='{S3_ACCESS_KEY}'")
-        wc.execute(f"SET s3_secret_access_key='{S3_SECRET_KEY}'")
-        wc.execute("SET s3_url_style='path'")
-        wc.execute(f"SET s3_use_ssl={'true' if S3_ENDPOINT.startswith('https') else 'false'}")
-
         if os.path.exists(LOCAL_DB):
             get_conn().execute(f"ATTACH '{LOCAL_DB}' AS logs (READ_ONLY)")
             TABLE = "logs.data"
             log.info("WARMUP PRONTO")
         else:
-            log.info("Warm-up: importando dados para cache local...")
-            wc.execute(f"ATTACH '{LOCAL_DB}' AS logs")
-            wc.execute(f"CREATE TABLE logs.data AS SELECT * FROM {TABLE_S3}")
-            wc.execute("CHECKPOINT")
-            get_conn().execute(f"ATTACH '{LOCAL_DB}' AS logs (READ_ONLY)")
-            TABLE = "logs.data"
-            log.info("WARMUP PRONTO")
-        wc.close()
+            log.info("Sem cache local. Usando S3 httpfs.")
     except Exception as e:
         log.warning("Cache local indisponível: %s. Usando S3 httpfs.", e)
 
