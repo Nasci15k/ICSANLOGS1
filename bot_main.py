@@ -60,7 +60,9 @@ async def check_group(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     except Exception:
         return True
 
-TABLE = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
+TABLE_S3 = f"read_parquet('s3://{BUCKET_NAME}/data_*.parquet')"
+TABLE = TABLE_S3
+LOCAL_DB = "/data/logs.duckdb"
 _conn: Optional[duckdb.DuckDBPyConnection] = None
 
 def get_conn():
@@ -75,6 +77,23 @@ def get_conn():
         _conn.execute("SET s3_url_style='path'")
         _conn.execute(f"SET s3_use_ssl={'true' if S3_ENDPOINT.startswith('https') else 'false'}")
     return _conn
+
+def warmup():
+    global TABLE
+    try:
+        conn = get_conn()
+        if os.path.exists(LOCAL_DB):
+            conn.execute(f"ATTACH '{LOCAL_DB}' AS logs (READ_ONLY)")
+            TABLE = "logs.data"
+            log.info("Cache DuckDB local: %s", LOCAL_DB)
+        else:
+            log.info("Warm-up: importando dados para cache local (pode levar vários minutos)...")
+            conn.execute(f"ATTACH '{LOCAL_DB}' AS logs")
+            conn.execute(f"CREATE TABLE logs.data AS SELECT * FROM {TABLE_S3}")
+            TABLE = "logs.data"
+            log.info("Cache local criado: %s", LOCAL_DB)
+    except Exception as e:
+        log.warning("Cache local indisponível: %s. Usando S3 httpfs.", e)
 
 def check_health():
     try:
@@ -378,6 +397,7 @@ async def keep_alive():
 def main():
     admin_start(HEALTH_PORT)
     check_health()
+    threading.Thread(target=warmup, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
