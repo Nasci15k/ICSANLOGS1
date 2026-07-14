@@ -93,14 +93,15 @@ def warmup():
         if os.path.exists(LOCAL_DB):
             get_conn().execute(f"ATTACH '{LOCAL_DB}' AS logs (READ_ONLY)")
             TABLE = "logs.data"
-            log.info("Cache DuckDB local: %s", LOCAL_DB)
+            log.info("WARMUP PRONTO")
         else:
             log.info("Warm-up: importando dados para cache local...")
             wc.execute(f"ATTACH '{LOCAL_DB}' AS logs")
             wc.execute(f"CREATE TABLE logs.data AS SELECT * FROM {TABLE_S3}")
+            wc.execute("CHECKPOINT")
             get_conn().execute(f"ATTACH '{LOCAL_DB}' AS logs (READ_ONLY)")
             TABLE = "logs.data"
-            log.info("Cache local criado: %s", LOCAL_DB)
+            log.info("WARMUP PRONTO")
         wc.close()
     except Exception as e:
         log.warning("Cache local indisponível: %s. Usando S3 httpfs.", e)
